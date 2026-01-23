@@ -577,24 +577,40 @@ min_in_group_fraction=0.25,use_raw=False,method='wilcoxon'):
     Markers=pd.DataFrame(adata.uns['rank_genes_groups_filtered']['names'])
     return Markers.apply(lambda x: pd.Series(x.dropna().values))
 
-def HVGbyBatch(adata,batch_key='batch',min_mean=0.0125, max_mean=3, min_disp=0.5,\
-min_clustersize=100,genenames=['default']):
+def HVGbyBatch(adata,batch_key='batch',min_mean=0.0125,max_mean=3, min_disp=0.5,min_clustersize=100,genenames=['default'],flavor='seurat',n_top_genes=4000):
+    """
+    Identify highly variable genes per batch and count how many batches each gene is hvg in.
+
+    New Parameters:
+    - flavor: str
+        'seurat' or 'seurat_v3'
+    - n_top_genes: int
+        For seurat_v3 only,number of top genes to identify
+    """
     if 'default' in genenames:
         genenames = adata.var_names
+    
+    if flavor == 'seurat_v3' and 'counts' not in adata.layers:
+        raise ValueError("seurat_v3 flavor requires a 'counts' layer")
+
     sc.settings.verbosity=0
     batchlist=adata.obs[batch_key].value_counts()
-    for key in batchlist[batchlist>min_clustersize].index:
-        adata_sample = adata[adata.obs[batch_key]==key,:][:,genenames]
+    valid_batches = batchlist[batchlist>min_clustersize].index
+
+    for key in valid_batches:
+        adata_sample = adata[adata.obs[batch_key]==key,:][:,genenames].copy()
         print(key)
-        sc.pp.highly_variable_genes(adata_sample, min_mean=min_mean, max_mean=max_mean, min_disp=min_disp)
-        adata.var['highly_variable'+'_'+key]=pd.Series(adata.var_names,\
+        if flavor == 'seurat_v3':
+            sc.pp.highly_variable_genes(adata_sample, n_top_genes=n_top_genes, flavor='seurat_v3', layer='counts')
+        else:
+            sc.pp.highly_variable_genes(adata_sample, min_mean=min_mean, max_mean=max_mean, min_disp=min_disp)
+        adata.var[f'highly_variable_{key}']=pd.Series(adata.var_names,\
             index=adata.var_names).isin(adata_sample.var_names[adata_sample.var['highly_variable']])
+
     sc.settings.verbosity=3
-    adata.var['highly_variable_n']=0
-    temp=adata.var['highly_variable_n'].astype('int32')
-    for key in batchlist[batchlist>min_clustersize].index:
-        temp=temp+adata.var['highly_variable_'+key].astype('int32')
-    adata.var['highly_variable_n']=temp
+    hvg_cols = [f'highly_variable_{key}' for key in valid_batches]
+    adata.var['highly_variable_n'] = adata.var[hvg_cols].sum(axis=1).astype('int32')
+    
     return adata
 
 def HVG_cutoff(adata,range_int=10,cutoff=5000,HVG_var='highly_variable_n',fig_size=(8,6)):
