@@ -20,7 +20,7 @@ Among the functions in *Scanpyplus*, there's also a function to do feature gene 
 
 A *MATLAB* implementation can be found [here](https://github.com/brianpenghe/Matlab-genomics).
 
-This algorithm can be potentially used to reduce batch effect when fearing overcorrection, especially comparing conditions or time points. Two notebooks are provided showing "soft integration" of [embryonic limb](https://nbviewer.jupyter.org/github/Peng-He-Lab/ScanpyPlus/tree/master/Soft_integration_limb.ipynb) and [pancreas](https://nbviewer.jupyter.org/github/Peng-He-Lab/ScanpyPlus/tree/master/Soft_integration_pancreas.ipynb) data.
+This algorithm can be potentially used to reduce batch effect when fearing overcorrection, especially comparing conditions or time points. Two notebooks are provided showing "soft integration" of [embryonic limb](Soft_integration_limb.ipynb) and [pancreas](Soft_integration_pancreas.ipynb) data.
 
 More conventionally, `HVGbyBatch` calls `sc.pp.highly_variable_genes` per batch, stores per-batch boolean flags and an aggregate count `highly_variable_n`
 ```python
