@@ -10,7 +10,9 @@ import Scanpyplus
 [He, Lim and Sun et al.](https://www.cell.com/cell/fulltext/S0092-8674(22)01415-5)
 A human fetal lung cell atlas uncovers proximal-distal gradients of differentiation and key regulators of epithelial fates
 
-## DeepTree feature selection
+<details>
+  <summary><b>DeepTree feature selection</b></summary>
+
 ![image](https://user-images.githubusercontent.com/4110443/146441826-a4079e4c-c9de-4d93-9ebe-3e1c07227eb1.png)
 
 
@@ -37,7 +39,27 @@ i = Scanpyplus.HVG_cutoff(adata, cutoff=5000)
 Scanpyplus.HVG_Venn_Upset(adata, ['highly_variable_A','highly_variable_B'])
 ```
 
-## Doublet Cluster Labeling (DouCLing)
+`DeepTree` clusters HVG expression (via `snsCluster`), cuts the gene dendrogram, and flags genes that fall into sufficiently large clades (`Deep`). Returns `[bdata, test, test1, test2]` (filtered object plus Seaborn cluster maps).
+```python
+bdata, test, test1, test2 = Scanpyplus.DeepTree(
+    adata, MouseC1ColorDict2={False:'#000000', True:'#00FFFF'},
+    cell_type='leiden', gene_type='highly_variable', Cutoff=0.8, CladeSize=2)
+```
+
+`DeepTree_per_batch` runs DeepTree within each batch on that batch's HVGs and stores `Deep_<batch>` flags plus aggregate `Deep_n`.
+```python
+Scanpyplus.DeepTree_per_batch(adata, batch_key='batch', Cutoff=0.8, CladeSize=2)
+```
+
+`DeepTree2` is a lighter scipy-only variant that returns an AnnData with a `Deep` gene flag (no Seaborn plots).
+```python
+bdata = Scanpyplus.DeepTree2(adata, Cutoff=0.8, CladeSize=2)
+```
+</details>
+
+<details>
+  <summary><b>Doublet Cluster Labeling (DouCLing)</b></summary>
+
 ![unnamed](https://user-images.githubusercontent.com/4110443/146441371-e7b4bec2-9e87-4a9d-98ad-3f3401ce13ed.jpg)
 
 There are 4 types of doublets:
@@ -50,6 +72,13 @@ Heterotypic doublets can sometimes trick data scientists into thinking they are 
 Heterotypic doublets are usually identified by matching individual cells to synthetic doublets regardless of manually curated clusters. Algorithms like Scrublet can remove a substantial part of doublet cells but not all of them. The survivor doublets can still aggregate into tiny clusters picked up by the annotaters when doing subclustering. Doublets of rarer cell types are also often missed, which obscures the discoveries of new cell types and states.
 To leverage the input from biologists' manual parsing and the increased sensitivity of cluster-average signatures, I introduce here an alternative approach to facilitate heterotypic doublet cluster identification. This approach scans through individual tiny clusters and look for its "Parent 2" that gives it a unique feature that's different from its sibling subclusters sharing the same "Parent 1". 
 [A notebook using published PBMC data](https://nbviewer.jupyter.org/github/Peng-He-Lab/ScanpyPlus/tree/master/DOUblet_Cluster_Labeling.ipynb) is provided.
+
+`DouCLing(adata, hi_type, lo_type, rm_genes=[], print_marker_genes=False, fraction_threshold=0.6)` scores high-resolution clusters against low-resolution compartments and returns a table with putative parents, hypergeometric p-values, and an `Is_doublet_cluster` flag.
+```python
+scores = Scanpyplus.DouCLing(adata, hi_type='leiden_R', lo_type='leiden',
+                             rm_genes=['TYMS','MKI67'], fraction_threshold=0.6)
+```
+</details>
 
 <details>
   <summary><b>Other functions in Scanpyplus:</b></summary>
@@ -70,12 +99,12 @@ You can extract the color dict of a variable from an anndata object using `Extra
 and manually edit the color dict, and then use it to update colors in `adata.uns` using `UpdateUnsColor`.
 
 ```python
-Scanpyplus.UpdateUnsColor(adata, 'cell_type', {'T cell':'#1f77b4', 'B cell':'#ff7f0e'})
+Scanpyplus.UpdateUnsColor(adata, ColorDict, obsKey='cell_type')
 ```
 
 You can also force a category to render white using `MakeWhite`
 ```python
-Scanpyplus.MakeWhite(adata, 'condition', value='background')
+Scanpyplus.MakeWhite(adata, obsKey='condition', whiteCat='background')
 ```
 
 ### Metadata / obs (observation) helpers:
@@ -85,9 +114,9 @@ You can plot sankey graph between two variables of an anndata object using `Scan
 Scanpyplus.ScanpySankey(adata, 'louvain', 'cell_type')
 ```
 
-`orderGroups(adata, obsKey, new_order)` → reorder category levels.
+`orderGroups(adata, groupby='leiden')` returns dendrogram-ordered category labels for a grouping key.
 ```python
-Scanpyplus.orderGroups(adata, 'louvain', ['0','2','1','3'])
+order = Scanpyplus.orderGroups(adata, groupby='louvain')
 ```
 
 `remove_barcode_suffix` removes the suffix after the '-' in the cell (barcode) name.
@@ -95,9 +124,9 @@ Scanpyplus.orderGroups(adata, 'louvain', ['0','2','1','3'])
 Scanpyplus.remove_barcode_suffix(adata)
 ```
 
-`CopyMeta` copies the metadata (both obs and var) from one object to another.
+`CopyMeta` copies obs/var metadata columns from one object to another (optionally overwriting).
 ```python
-Scanpyplus.CopyMeta(ref, query, obs_keys=['cell_type', 'donor'])
+Scanpyplus.CopyMeta(ref, query, overwrite=False)
 ```
 
 `AddMeta` stores a dataframe of obs values per each cell into an object.
@@ -107,7 +136,32 @@ Scanpyplus.AddMeta(adata, df)
 
 `AddMetaBatch` reads a dataframe of obs values per batch into an object. This format of metadata (rows are batch names, columns are obs categories) is more common, compact and human readable that is usually stored in *Excel* spreadsheets.
 ```python
-Scanpyplus.AddMetaBatch(adata, batch_table, batch_key='donor', on='cell_type')
+Scanpyplus.AddMetaBatch(adata, batch_table, batch_key='donor')
+```
+
+`ExtractMetaBatch` is the reverse of `AddMetaBatch`: returns the modal value of each obs column per batch.
+```python
+Scanpyplus.ExtractMetaBatch(adata, batch_key='batch')
+```
+
+`ConvertString` casts selected obs columns to string.
+```python
+Scanpyplus.ConvertString(adata, ['sample', 'donor'])
+```
+
+`MapCategories` renames categorical levels in an obs column using a mapping dict.
+```python
+Scanpyplus.MapCategories(adata, 'cell_type', {'old':'new'})
+```
+
+`dropmeta` drops specified columns from `adata.obs` if present.
+```python
+Scanpyplus.dropmeta(adata, ['tmp_score', 'unused'])
+```
+
+`SubclusterAll` Leiden-subclusters each parent cluster and writes hierarchical labels (e.g. `0_1`) to `result_key`.
+```python
+Scanpyplus.SubclusterAll(adata, parent_key='leiden', resolution=0.3, result_key='leiden_R')
 ```
 
 ### Gene / var (variable)  metadata:
@@ -119,9 +173,9 @@ Scanpyplus.AddMetaBatch(adata, batch_table, batch_key='donor', on='cell_type')
 Scanpyplus.file2gz('matrix.mtx')
 ```
 
-`Scanpy2MM` saves an *anndata* into *MatrixMarket* form.
+`Scanpy2MM` saves an *anndata* into *MatrixMarket* form (optionally writing embeddings into metadata via `write2Dobsm`).
 ```python3
-Scanpyplus.Scanpy2MM(adata, 'mm_out', layer='counts')
+Scanpyplus.Scanpy2MM(adata, prefix='mm_out/', write2Dobsm=['X_umap'])
 ```
 
 `mtx2df` reads *MatrixMarket* files into a dataframe.
@@ -135,9 +189,14 @@ Scanpyplus.mtx2df('matrix.mtx', 'features.tsv', 'barcodes.tsv')
 Scanpyplus.GetRaw(adata)
 ```
 
- `CalculateRaw` → rebuild a raw count matrix from log-transformed counts based on `n_counts` 
+`CalculateRaw` → rebuild a raw count matrix from log-transformed counts based on `n_counts` 
 ```python
-Scanpyplus.CalculateRaw(adata, counts_key='n_counts', log1p=True)
+Scanpyplus.CalculateRaw(adata, scaling_factor=10000)
+```
+
+`CalculateRawAuto` reverses log1p without `n_counts` by treating each cell's minimum nonzero value as 1.
+```python
+Scanpyplus.CalculateRawAuto(adata)
 ```
 
 `CheckGAPDH` Quickly inspects first few entries for a given gene, optionally from a sparse matrix.
@@ -152,23 +211,23 @@ Scanpyplus.FindSimilarGenes(adata, genename='XIST')
 
 For large matrices, cells can be `DownSample`d based on labels such as cell types.
 ```python
-Scanpyplus.DownSample(adata, 'cell_type', n_per_group=500)
+Scanpyplus.DownSample(adata, 'cell_type', downsampleTo=500)
 ```
 
 Sometimes `PseudoBulk` profiles are also useful to generate, whether it's the mean, median or max.
 ```python
-Scanpyplus.PseudoBulk(adata, groupby='sample', layer='counts')
+Scanpyplus.PseudoBulk(adata, group_key='sample', layer='counts')
 ```
 
 ### Embedding utilities:
 `ShiftEmbedding` creates a platter that juxtaposes subsets of the data (batches, stages etc.) to visualize side by side.
 ```python
-Scanpyplus.ShiftEmbedding(adata, 'batch', obsm_key='X_umap')
+Scanpyplus.ShiftEmbedding(adata, 'batch', embedding='X_umap')
 ```
 
 `CopyEmbedding` copies the embedding of one object to another.
 ```python
-Scanpyplus.CopyEmbedding(ref, query, obsm_key='X_umap')
+Scanpyplus.CopyEmbedding(ref, query, embedding='X_umap')
 ```
 
 ### Plotting stacked barplots of cell-type/condition proportions:
@@ -182,7 +241,18 @@ Scanpyplus.CopyEmbedding(ref, query, obsm_key='X_umap')
 Scanpyplus.plot_umap_with_labels(adata, 'cell_type', 'plot.png', 'plot.pdf')
 ```
 
+`PlotCrosstab` plots a heatmap of a crosstab / confusion matrix between two obs keys.
+```python
+Scanpyplus.PlotCrosstab(adata, row_key='Predicted', col_key='cell_type',
+                        outfile='confusion_matrix.png')
+```
+
 ### Gene-level calculation and plotting:
+`returnDEres` extracts a tidy DE dataframe (scores, logFC, p-values, optionally pts) from `adata.uns['rank_genes_groups']`, optionally removing mito/ribo genes.
+```python
+Scanpyplus.returnDEres(adata, column='0', key='rank_genes_groups')
+```
+
 `DEmarkers` calculates, filters and plots differentially expressed genes between two populations.
 
 `GlobalMarkers` calculates marker genes for every cell cluster and filters them.
@@ -200,7 +270,7 @@ Scanpyplus.GPT_annotation_genes(adata, leiden_key='leiden', top_n=10)
 ### Seaborn utilities:
 `snsSplitViolin` plots splitviolin plots for two populations.
 ```python
-Scanpyplus.snsSplitViolin(adata, 'GATA3', 'cell_type', 'condition')
+Scanpyplus.snsSplitViolin(adata, ['GATA3'], celltype='leiden', celltypelist=['0','1'])
 ```
 
 `snsCluster` plots clustermaps using an *anndata object* as input. This has been helped by Bao Zhang from [Zhang lab](https://github.com/ZhangHongbo-Lab)
@@ -210,7 +280,7 @@ Scanpyplus.snsSplitViolin(adata, 'GATA3', 'cell_type', 'condition')
 `extractSeabornRows` extracts the rowlabels of a *Seaborn object* and saves into a *Series*.
 
 ### Plotting Venn / UpSet diagram:
-`Venn_Upset` can be used to directly plot upset plots (bar plots of each category of intersections).
+`UpSetFromLists` (also available in *pandasPlus*) plots upset plots (bar plots of each category of intersections) from lists of lists. `HVG_Venn_Upset` is the AnnData-oriented variant for comparing HVG flags.
 
 ### Treemap:
 `Treemap(adata, output='temp', branchlist=['project','batch'], width=1000, height=700, title='title')`
@@ -219,22 +289,109 @@ Treemap of obs counts by hierarchical categories; saves PDF and CSV.
 Scanpyplus.Treemap(adata, output='out/treemap', branchlist=['donor','cell_type'])
 ```
 
-### Label transfer:
+### Label transfer / logistic regression:
 `LogisticRegressionCellType` can learn the defining features of a variable (such as cell type) of the reference object and predict the corresponding labels of a query object. 
 
-The saved model files and also be re-used to predict a new query object in future by `LogisticPrediction`.
+The saved model files can also be re-used to predict a new query object in future by `LogisticPrediction`.
+
+Helpers for saved models:
+- `LoadLogitModel(model_addr)` / `LoadLogitGenes(genecsv)` load a pickled model and its gene list.
+- `ExtractLogitScores(adata, model, CT_genes)` returns per-class probabilities and `lr_score`.
+- `Model2Coeff(model_pkl, genelistcsv)` returns a coefficient dataframe (classes × genes).
+```python
+Scanpyplus.LogisticPrediction(adata, 'model.pkl', 'genes.csv', scores=True, compute_umap=False)
+```
+
+### QC and data loading:
+`QC` annotates mt/ribo/hb genes (human or mouse) and runs `sc.pp.calculate_qc_metrics`.
+```python
+Scanpyplus.QC(adata, species='human')
+```
+
+`read_folder` loads 10X / AnnData files from sample subdirectories (optional concat). `read_numbered_folders` is a convenience wrapper for numbered directories.
+```python
+adatas = Scanpyplus.read_folder('/path/to/samples', data_pattern='filtered_feature_bc_matrix.h5',
+                                batch_key='sample', concat=False)
+adata = Scanpyplus.read_numbered_folders('/path/to/samples', min_dir=1, max_dir=12, concat=True)
+```
+
+`iRODS_stats_starsolo(samples)` downloads STARsolo Gene/cr3 matrices via `iget`, computes cell count and median n_counts per library, and returns a QC table.
+
+`OverlapBarcode` reports shared barcode prefixes across a list of AnnData objects.
+```python
+Scanpyplus.OverlapBarcode([adata1, adata2], ['s1', 's2'])
+```
+
+`extract_barcode_prefix` returns the barcode string before `-`.
+
+`import_souporcell` imports Souporcell cluster / status assignments into `adata.obs`.
+```python
+Scanpyplus.import_souporcell(adata, 'clusters.tsv', prefix='')
+```
+
+`run_celltypist` wraps CellTypist annotation (and optional UMAP plots).
+```python
+Scanpyplus.run_celltypist(adata, model_name='Immune_All_Low.pkl', majority_voting=True)
+```
+
+### Spatial / iStar inputs:
+Helpers to export Visium-style AnnData into iStar input files:
+- `iStar_extract_locs_raw` → `locs-raw.tsv`
+- `iStar_extract_counts_raw` → `cnts.tsv`
+- `iStar_extract_scalefactors` → `pixel-size-raw.txt` and `radius-raw.txt`
+- `iStar_generate_all_inputs(h5ad_path, formatted_name, output_dir='.')` runs all of the above.
+```python
+Scanpyplus.iStar_generate_all_inputs('sample.h5ad', formatted_name='sample', output_dir='istar_in')
+```
+
+### Also mirrored from pandasPlus:
+`show_graph_with_labels`, `DF2Ann`, `UpSetFromLists`, `zscore`, `Ginni`, `cellphonedb_p2adjMat`, `cellphonedb_n_interaction_Mat`, `cellphonedb_mat_per_interaction`, and `ListsOverlap` are available on `Scanpyplus` as well (see **Functions in pandasPlus** below).
 </details>
 
 <details>
   <summary><b>Functions in pandasPlus:</b></summary>
 
 `DF2Ann` converts a dataframe into an *anndata* object.
+```python
+pandasPlus.DF2Ann(df)
+```
 
 `UpSetFromLists` plots an upset plot (barplot of Venn diagram intersections) based on lists of lists.
+```python
+pandasPlus.UpSetFromLists([list_a, list_b], labels=['A','B'])
+```
 
-`show_graph_with_labels` plots an interaction graph using edges to represent connection strength (max at 1, at least 0.9 to be shown).
+`show_graph_with_labels` plots an interaction graph using edges to represent connection strength (edges shown when value ≥ 0.9).
+```python
+pandasPlus.show_graph_with_labels(adjacency_df)
+```
 
 Dataframe values can also be used to calculate `zscore` and `Ginni` coefficients.
+```python
+pandasPlus.zscore(df, dropna=True, axis=1)
+pandasPlus.Ginni(df)  # appends a 'Ginni' row
+```
 
-`cellphonedb_n_interaction_Mat` and `cellphonedb_mat_per_interaction` are useful to reformat cellphonedb outputs.
+`cellphonedb_p2adjMat`, `cellphonedb_n_interaction_Mat`, and `cellphonedb_mat_per_interaction` reformat CellPhoneDB `pvalues.txt` outputs into cell-type × cell-type matrices (significant pair strings, counts, or a single interaction's p-values).
+```python
+pandasPlus.cellphonedb_p2adjMat('pvalues.txt', pval=0.05)
+pandasPlus.cellphonedb_n_interaction_Mat('pvalues.txt', pval=0.05)
+pandasPlus.cellphonedb_mat_per_interaction('EGFR_TGFB1', 'pvalues.txt')
+```
+
+`ListsOverlap(A, B)` returns a dataframe of shared-element counts between each list in `A` and each list in `B` (lists of lists).
+```python
+pandasPlus.ListsOverlap([['a','b'], ['b','c']], [['b'], ['a','c']])
+```
+</details>
+
+<details>
+  <summary><b>Other scripts in this repository:</b></summary>
+
+`Pythonplus.CheckSource(Function2Check)` prints the source code of a Python function (useful for inspecting Callables interactively).
+
+`cellranger_summary.py` merges Cell Ranger `outs/summary.csv` files across sample subdirectories into one TSV:
+```bash
+python cellranger_summary.py --base_dir /path/to/cellranger_outs --output summary.tsv
+```
 </details>
