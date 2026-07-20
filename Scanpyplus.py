@@ -65,7 +65,9 @@ def plot_umap_with_labels(
     label_weight='bold',
     arrow_color='red',
     dpi=300,
-    palette=None
+    palette=None,
+    adjust_kwargs=None,
+    **kwargs
 ):
     """
     Plot a UMAP scatter plot with labels and save it as PNG and PDF files.
@@ -82,6 +84,9 @@ def plot_umap_with_labels(
         arrow_color: str, color of the arrows used to adjust text labels.
         dpi: int, resolution of the saved images.
         palette: list, optional, color palette for the scatter plot.
+        adjust_kwargs: dict, optional, keyword arguments passed directly 
+                       to the adjust_text function (e.g., {'force_text': (3, 3), 
+                       'expand_points': (0, 0)}).
 
     Returns:
         None
@@ -114,9 +119,22 @@ def plot_umap_with_labels(
         x = adata.obsm['X_umap'][idx, 0]
         y = adata.obsm['X_umap'][idx, 1]
         texts.append(ax.text(x, y, label, fontsize=label_fontsize, weight=label_weight))
+    
+    # Define the default configuration
+    adjust_text_config = dict(
+        force_text=(3, 3),
+        expand_text=(0.5, 1),
+        expand_points=(0, 0),
+        lim=10,
+        arrowprops=dict(arrowstyle='-', color='grey', lw=0.5, alpha=0.5)
+    )
 
+    # If the user provides their own settings, update/override the defaults
+    if adjust_kwargs is not None:
+        adjust_text_config.update(adjust_kwargs)
+    
     # Adjust text to avoid overlaps
-    adjust_text(texts, arrowprops=dict(arrowstyle='->', color=arrow_color))
+    adjust_text(texts, **adjust_text_config)
 
     # Adjust figure margins
     plt.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
@@ -129,6 +147,7 @@ def plot_umap_with_labels(
 
     # Show the plot
     plt.show()
+
 # Example usage
 # from anndata import AnnData
 # import scanpy as sc
@@ -137,6 +156,16 @@ def plot_umap_with_labels(
 # adata_highQ_epi = AnnData()  # Replace this with actual AnnData loading
 # adata_highQ_epi.obsm['X_umap'] = [[1, 2], [3, 4], [5, 6]]  # Mock UMAP coordinates
 # adata_highQ_epi.obs['lev3_celltype'] = ['Type1', 'Type2', 'Type3']  # Mock cell types
+# my_custom_umap_settings = {
+#    'force_text': (0.5, 0.5),
+#    'expand_points': (1.2, 1.2),
+#    'arrowprops': {
+#        'arrowstyle': '->',
+#        'color': 'red',
+#        'lw': 1.0,
+#        'alpha': 0.8
+#    }
+# }
 #
 # # Call the function with detailed parameters
 # plot_umap_with_labels(
@@ -149,7 +178,8 @@ def plot_umap_with_labels(
 #     label_fontsize=12,
 #     label_weight='bold',
 #     arrow_color='blue',
-#     dpi=300
+#     dpi=300,
+#     adjust_kwargs=my_custom_umap_settings
 # )
 
 def ExtractColor(adata,obsKey='louvain',keytype=int):
