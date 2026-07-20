@@ -161,7 +161,7 @@ Scanpyplus.dropmeta(adata, ['tmp_score', 'unused'])
 
 `SubclusterAll` Leiden-subclusters each parent cluster and writes hierarchical labels (e.g. `0_1`) to `result_key`.
 ```python
-Scanpyplus.SubclusterAll(adata, parent_key='leiden', resolution=0.3, result_key='leiden_R')
+Scanpyplus.SubclusterAll(adata, parent_key='leiden', resolution=0.2, result_key='leiden_R')
 ```
 
 ### Gene / var (variable)  metadata:

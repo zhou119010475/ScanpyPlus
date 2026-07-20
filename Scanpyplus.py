@@ -1238,7 +1238,7 @@ def dropmeta(adata, columns_to_drop):
     if existing_cols:
         adata.obs.drop(columns=existing_cols, inplace=True)
 
-def SubclusterAll(adata, parent_key="leiden", resolution=0.3, result_key="leiden_R", clusters_to_use=None):
+def SubclusterAll(adata, parent_key="leiden", resolution=0.2, result_key="leiden_R", clusters_to_use=None):
 #Creates subclusters of defined clusters or all clusters and provides hierarchical labeling based on the parent's cluster name.
     
     adata.obs[result_key] = adata.obs[parent_key].astype(str)
