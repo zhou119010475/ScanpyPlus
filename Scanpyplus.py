@@ -859,22 +859,28 @@ def PseudoBulk(adata, group_key, layer=None, gene_symbols=None):
         out[group] = np.ravel(X.mean(axis=0, dtype=np.float64))
     return out
 
-def Dotplot2D(adata,obs1,obs2,gene,cmap='OrRd', min_count=1):
+def Dotplot2D(adata,obs1,obs2,gene,cmap='OrRd', min_count=1, dot_max=1, dot_min=0, smallest_dot=10, largest_dot=100, size_exponent=0.5):
     #This function was modified from K Polanski's codes. It can plot a gene such as XIST across samples and cell types
     #require at least these many cells in a batch+celltype intersection to process it
 
     #extract a simpler form of all the needed data - the gene's expression and the two obs columns
     #this way things run way quicker downstream
-    expression = np.array(adata[:,gene].X)
+    X = adata[:, gene].X
+    if sparse.issparse(X):
+        expression = X.toarray().ravel()
+    else:
+        expression = np.asarray(X).ravel()
     batches = adata.obs[obs1].values
     celltypes = adata.obs[obs2].values
 
-    dot_size_df = pd.DataFrame(0.0, index=np.unique(batches), columns=np.unique(celltypes))
-    dot_color_df = pd.DataFrame(0.0, index=np.unique(batches), columns=np.unique(celltypes))
+    batch_levels = list(adata.obs[obs1].cat.categories) if pd.api.types.is_categorical_dtype(adata.obs[obs1]) else list(pd.Index(adata.obs[obs1].dropna()).unique())
+    celltype_levels = list(adata.obs[obs2].cat.categories) if pd.api.types.is_categorical_dtype(adata.obs[obs2]) else list(pd.Index(adata.obs[obs2].dropna()).unique())
+    dot_size_df = pd.DataFrame(0.0, index=batch_levels, columns=celltype_levels)
+    dot_color_df = pd.DataFrame(0.0, index=batch_levels, columns=celltype_levels)
 
-    for batch in np.unique(batches):
+    for batch in batch_levels:
         mask_batch = (batches == batch)
-        for celltype in np.unique(celltypes):
+        for celltype in celltype_levels:
             mask_celltype = (celltypes == celltype)
             #skip if there's not enough data for spot
             if np.sum(mask_batch & mask_celltype) >= min_count:
@@ -898,8 +904,15 @@ def Dotplot2D(adata,obs1,obs2,gene,cmap='OrRd', min_count=1):
     bdata.obs_names = list(dot_size_df.index)
     bdata.obs[obs1] = dot_size_df.index
     bdp = DotPlot(bdata, dot_size_df.columns, obs1, dot_size_df=dot_size_df, dot_color_df=dot_color_df)
-    bdp = bdp.style(cmap=cmap)
+    bdp = bdp.style(
+        cmap=cmap,
+        dot_max=dot_max,
+        dot_min=dot_min,
+        smallest_dot=smallest_dot,
+        largest_dot=largest_dot,
+        size_exponent=size_exponent)
     bdp.make_figure()
+    return bdp
 
 
 def DeepTree(adata,MouseC1ColorDict2,cell_type='louvain',gene_type='highly_variable',\
