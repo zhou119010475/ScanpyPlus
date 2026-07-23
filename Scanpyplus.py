@@ -981,6 +981,65 @@ def DeepTree_per_batch(adata,batch_key='batch',obslist=['batch'],min_clustersize
     adata.var['Deep_n']=temp
     return adata
 
+def _DeepTree_process_batch(bdata,key,obslist,Cutoff,CladeSize,threads_per_worker,save_dir=None):
+    #Runs in a joblib worker process: cap BLAS threads before any heavy
+    #numpy/scipy call in this process, and force a headless mpl backend
+    #before touching pyplot (no display in a worker process).
+    os.environ['OMP_NUM_THREADS']=str(threads_per_worker)
+    os.environ['OPENBLAS_NUM_THREADS']=str(threads_per_worker)
+    os.environ['MKL_NUM_THREADS']=str(threads_per_worker)
+    os.environ['NUMEXPR_NUM_THREADS']=str(threads_per_worker)
+    import matplotlib
+    matplotlib.use('Agg')
+    sc.pp.filter_genes(bdata,min_cells=3)
+    sc.pl.umap(bdata,color=obslist,show=False)
+    cellnames=bdata.obs_names.tolist()
+    genenames=bdata.var_names.tolist()
+    bdata2,test,test1,test2=DeepTree(bdata,
+                    MouseC1ColorDict2={False:'#000000',True:'#00FFFF'},
+                    cell_type=obslist,cellnames=cellnames,genenames=genenames,
+                    row_cluster=True,col_cluster=True,Cutoff=Cutoff,CladeSize=CladeSize)
+    deep_genes=bdata2[:,bdata2.var['Deep']].var_names.tolist()
+    if save_dir is not None:
+        #test1/test2 are already fully rendered by DeepTree() above; saving
+        #them is just a PNG encode+write, not a re-run of the clustering.
+        #test (the plain HVG heatmap used only to derive Deep) isn't saved.
+        test1.savefig(os.path.join(save_dir,f'{key}_deeptree_deepmarked.png'),dpi=150,bbox_inches='tight')
+        test2.savefig(os.path.join(save_dir,f'{key}_deeptree_deepselected.png'),dpi=150,bbox_inches='tight')
+    plt.close('all')
+    return key,deep_genes
+
+def DeepTree_per_batch_parallel(adata,batch_key='batch',obslist=['batch'],min_clustersize=100,Cutoff=0.8,CladeSize=2,n_jobs=9,threads_per_worker=3,save_dir=None):
+    #Parallel version of DeepTree_per_batch: identical algorithm and output
+    #(Deep_<batch> / Deep_n columns), but the independent per-batch DeepTree()
+    #calls run concurrently via joblib instead of a serial for-loop.
+    #Keep n_jobs*threads_per_worker within your machine's shared-usage budget
+    #(e.g. n_jobs=9, threads_per_worker=3 -> 27 cores).
+    #save_dir: if given, each batch's Deep-marked and Deep-selected heatmaps
+    #are written there as PNGs (workers run headless, so nothing displays
+    #inline even in a notebook -- pass save_dir to inspect them afterward).
+    batchlist=adata.obs[batch_key].value_counts()
+    keys=batchlist[batchlist>min_clustersize].index.tolist()
+    if save_dir is not None:
+        os.makedirs(save_dir,exist_ok=True)
+    #Slice each batch's subset up front in the calling process (cheap) so
+    #workers only pickle the small per-batch subset, not the full adata.
+    batch_subsets={}
+    for key in keys:
+        bdata=adata[:,adata.var['highly_variable_'+key]][adata.obs[batch_key]==key,:].copy()
+        batch_subsets[key]=bdata
+    results=joblib.Parallel(n_jobs=n_jobs)(
+        joblib.delayed(_DeepTree_process_batch)(batch_subsets[key],key,obslist,Cutoff,CladeSize,threads_per_worker,save_dir)
+        for key in keys)
+    for key,deep_genes in results:
+        adata.var['Deep_'+key]=pd.Series(adata.var_names,index=adata.var_names).isin(deep_genes)
+    adata.var['Deep_n']=0
+    temp=adata.var['Deep_n'].astype('int32')
+    for key in keys:
+        temp=temp+adata.var['Deep_'+key].astype('int32')
+    adata.var['Deep_n']=temp
+    return adata
+
 def HVG_Venn_Upset(adata,genelists,size_height=3):
     from upsetplot import UpSet
     from upsetplot import plot
