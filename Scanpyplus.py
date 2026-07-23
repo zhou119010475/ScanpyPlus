@@ -1344,6 +1344,121 @@ def QC(adata, species="human", mt_prefix=None,
     sc.pp.calculate_qc_metrics(
         adata, qc_vars=["mt", "ribo", "hb"], log1p=log1p,inplace=inplace)
 
+sc_genes = ['EEF1A1', 'TPT1', 'FTH1', 'FTL', 'SERF2', 'ATP5F1E', 'GAPDH', 'UBA52', 'COX7C', 'MIF']
+sn_genes = ['FTX', 'AGAP1', 'GMDS-DT', 'PARD3', 'WWOX', 'MAGI2', 'PKHD1', 'NHS', 'AC098829.1', 'DPP6']
+
+def CellorNuc(
+    adata,
+    sc_genes,
+    sn_genes,
+    cell_type_col='cell_type',
+    assay_col='assay',
+    sc_label='sc',
+    sn_label='sn',
+    clip_percentiles=(0.01, 0.99),
+    sc_threshold_percentile=0.05,
+    sn_threshold_percentile=0.95,
+    copy=False
+):
+    """
+    Scores single cells and single nuclei based on distinct gene signatures and
+    classifies anomalous cross-modality profiles.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The annotated data matrix of shape n_obs × n_vars.
+    sc_genes : list
+        List of genes enriched in single-cell assays (e.g., cytoplasmic markers).
+    sn_genes : list
+        List of genes enriched in single-nucleus assays (e.g., nuclear markers).
+    cell_type_col : str, optional (default: 'cell_type')
+        Column in adata.obs containing cell type annotations.
+    assay_col : str, optional (default: 'assay')
+        Column in adata.obs containing the modality assay labels.
+    sc_label : str, optional (default: 'sc')
+        The exact string in assay_col identifying single-cell droplets.
+    sn_label : str, optional (default: 'sn')
+        The exact string in assay_col identifying single-nucleus droplets.
+    clip_percentiles : tuple, optional (default: (0.01, 0.99))
+        Percentiles used to clip (Winsorize) the differential score to prevent outliers.
+    sc_threshold_percentile : float, optional (default: 0.05)
+        The lower-bound percentile for typical SC profiles. Droplets falling below this
+        but above the SN upper bound become 'Uncertain'.
+    sn_threshold_percentile : float, optional (default: 0.95)
+        The upper-bound percentile for typical SN profiles. Droplets exceeding this
+        but falling below the SC lower bound become 'Uncertain'.
+    copy : bool, optional (default: False)
+        If True, returns a copy of the AnnData object. Otherwise, modifies in place.
+
+    Returns
+    -------
+    AnnData (if copy=True)
+        Updates adata.obs with score columns and 'modality_classification'.
+    """
+
+    adata = adata.copy() if copy else adata
+
+    # 1. Validate inputs
+    if cell_type_col not in adata.obs.columns:
+        raise ValueError(f"Column '{cell_type_col}' not found in adata.obs")
+    if assay_col not in adata.obs.columns:
+        raise ValueError(f"Column '{assay_col}' not found in adata.obs")
+
+    # 2. Filter for genes actually present in the matrix
+    sc_found = [g for g in sc_genes if g in adata.var_names]
+    sn_found = [g for g in sn_genes if g in adata.var_names]
+
+    if not sc_found or not sn_found:
+        raise ValueError("One or both gene lists have zero overlap with adata.var_names")
+
+    # 3. Score genes globally
+    sc.tl.score_genes(adata, gene_list=sc_found, score_name='sc_score')
+    sc.tl.score_genes(adata, gene_list=sn_found, score_name='sn_score')
+
+    # 4. Calculate differential score and clip outliers
+    adata.obs['cell_vs_nucleus_score'] = adata.obs['sc_score'] - adata.obs['sn_score']
+
+    vmin, vmax = adata.obs['cell_vs_nucleus_score'].quantile(list(clip_percentiles))
+    adata.obs['cell_vs_nucleus_score_clipped'] = adata.obs['cell_vs_nucleus_score'].clip(vmin, vmax)
+
+    # 5. Initialize classification column
+    adata.obs['modality_classification'] = 'Uncertain'
+
+    # 6. Apply cell-type specific statistical boundaries
+    for ct in adata.obs[cell_type_col].unique():
+        ct_mask = adata.obs[cell_type_col] == ct
+        sc_mask = ct_mask & (adata.obs[assay_col] == sc_label)
+        sn_mask = ct_mask & (adata.obs[assay_col] == sn_label)
+
+        # Determine SC lower bound using the parameterized percentile (min 0)
+        if sc_mask.any():
+            sc_lower = max(0.0, adata.obs.loc[sc_mask, 'cell_vs_nucleus_score'].quantile(sc_threshold_percentile))
+        else:
+            sc_lower = 0.0
+
+        # Determine SN upper bound using the parameterized percentile (max 0)
+        if sn_mask.any():
+            sn_upper = min(0.0, adata.obs.loc[sn_mask, 'cell_vs_nucleus_score'].quantile(sn_threshold_percentile))
+        else:
+            sn_upper = 0.0
+
+        # Classify Single-Cell droplets
+        if sc_mask.any():
+            adata.obs.loc[sc_mask & (adata.obs['cell_vs_nucleus_score'] >= sc_lower), 'modality_classification'] = 'Typical Cell (SC)'
+            adata.obs.loc[sc_mask & (adata.obs['cell_vs_nucleus_score'] <= sn_upper), 'modality_classification'] = 'Nucleus-like Cell (SC)'
+
+        # Classify Single-Nucleus droplets
+        if sn_mask.any():
+            adata.obs.loc[sn_mask & (adata.obs['cell_vs_nucleus_score'] <= sn_upper), 'modality_classification'] = 'Typical Nucleus (SN)'
+            adata.obs.loc[sn_mask & (adata.obs['cell_vs_nucleus_score'] >= sc_lower), 'modality_classification'] = 'Cell-like Nucleus (SN)'
+
+    # Convert to categorical for better memory efficiency and downstream plotting
+    categories = ['Typical Cell', 'Nucleus-like Cell', 'Typical Nucleus', 'Cell-like Nucleus', 'Uncertain']
+    adata.obs['modality_classification'] = pd.Categorical(adata.obs['modality_classification'], categories=categories)
+
+    return adata if copy else None
+
 def MapCategories(adata, key, corrections_dict):
 # Mapping old categories to new names based on corrections_dict and the adata.obs['key'] column. Column needs to be category. Also, adds new categories to category's keys. Requires a mapping dictionary.
  
