@@ -1513,6 +1513,27 @@ def OverlapBarcode(adatas, samplename):
         'overlap_percentage': overlap_matrix.div(overlap_matrix.sum(axis=1), axis=0) * 100
     }
 
+def CheckDuplicate(adata, batch_key='sample', size_height=3, showplot=True):
+    #Detect barcodes shared across samples/batches within a single concatenated AnnData
+    #object. Splits adata by batch_key, reuses OverlapBarcode for pairwise overlap counts,
+    #and plots the overlap as an UpSet plot via UpSetFromLists.
+    from pandasPlus import UpSetFromLists
+
+    if batch_key not in adata.obs.columns:
+        raise ValueError(f"Column '{batch_key}' not found in adata.obs")
+
+    samplename = adata.obs[batch_key].astype(str).unique().tolist()
+    adatas = [adata[adata.obs[batch_key].astype(str) == s] for s in samplename]
+
+    overlap = OverlapBarcode(adatas, samplename)
+    overlap['upset'] = UpSetFromLists(
+        listOflist=[overlap['barcode_dict'][s].tolist() for s in samplename],
+        labels=samplename,
+        size_height=size_height,
+        showplot=showplot
+    )
+    return overlap
+
 def show_graph_with_labels(adjacency_matrix, threshold=0.9):
     #Display network graph from adjacency matrix
     import networkx as nx
