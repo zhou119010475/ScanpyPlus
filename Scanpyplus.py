@@ -1347,6 +1347,45 @@ def QC(adata, species="human", mt_prefix=None,
 sc_genes = ['EEF1A1', 'TPT1', 'FTH1', 'FTL', 'SERF2', 'ATP5F1E', 'GAPDH', 'UBA52', 'COX7C', 'MIF']
 sn_genes = ['FTX', 'AGAP1', 'GMDS-DT', 'PARD3', 'WWOX', 'MAGI2', 'PKHD1', 'NHS', 'AC098829.1', 'DPP6']
 
+def LoadGeneSignatures(signature='hcka_v1', path=None):
+    """
+    Load the single-cell / single-nucleus gene signatures shipped with ScanpyPlus.
+
+    Parameters
+    ----------
+    signature : str or None, optional (default: 'hcka_v1')
+        Key of the signature set to load. Pass None to get the whole file back
+        as a dict, including the provenance fields ('source', 'date_extracted',
+        'status') recorded for each set.
+    path : str, optional
+        Path to a gene-signature JSON. Defaults to 'gene_signatures.json'
+        sitting next to this module, so it works from any working directory.
+
+    Returns
+    -------
+    (sc_genes, sn_genes) : tuple of list of str
+        Gene symbols enriched in single-cell and in single-nucleus droplets.
+        If signature is None, the full dict is returned instead.
+
+    Example
+    -------
+    sc_genes, sn_genes = Scanpyplus.LoadGeneSignatures()
+    Scanpyplus.CellorNuc(adata, sc_genes, sn_genes)
+    """
+    import json
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'gene_signatures.json')
+    with open(path) as fh:
+        signatures = json.load(fh)
+    if signature is None:
+        return signatures
+    if signature not in signatures:
+        raise ValueError(f"Signature '{signature}' not found in {path}. "
+                         f"Available: {list(signatures)}")
+    sig = signatures[signature]
+    return sig['sc_genes'], sig['sn_genes']
+
 def CellorNuc(
     adata,
     sc_genes,
