@@ -2,6 +2,9 @@ import gc
 #import scrublet as scr
 import scipy.io
 from scipy import sparse
+from scipy.optimize import minimize
+from scipy.special import logsumexp
+from scipy.stats import betabinom
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 import seaborn as sns
@@ -27,6 +30,7 @@ from scipy import cluster
 from glob import iglob
 import gzip
 
+import warnings
 
 
 def GPT_annotation_genes(adata, leiden_key="leiden", top_n=10):
@@ -1496,6 +1500,303 @@ def CellorNuc(
     categories = ['Typical Cell', 'Nucleus-like Cell', 'Typical Nucleus', 'Cell-like Nucleus', 'Uncertain']
     adata.obs['modality_classification'] = pd.Categorical(adata.obs['modality_classification'], categories=categories)
 
+    return adata if copy else None
+
+##################################### CellorNucEM ##########################
+############################################################################
+# ------------------------------------------------------------------ helpers
+def _set_counts_EM(adata, genes, layer=None):
+    found = [g for g in genes if g in adata.var_names]
+    if not found:
+        raise ValueError("Gene list has zero overlap with adata.var_names")
+    idx = adata.var_names.get_indexer(found)
+    X = adata.layers[layer] if layer is not None else adata.X
+    return np.asarray(X[:, idx].sum(axis=1)).ravel()
+ 
+ 
+def _fit_bb_weighted_EM(xu, mu, w, init=(5.0, 5.0), max_conc=1e8):
+    """Weighted MLE of beta-binomial (a, b).
+
+    max_conc bounds the concentration a + b. Without it the search runs away
+    whenever a component is under-dispersed (i.e. near-binomial): the MLE
+    pushes a + b towards infinity, and betabinom.logpmf loses precision past
+    ~1e15 and starts returning POSITIVE values, which a finiteness check
+    cannot catch — so the optimizer is actively rewarded for overflowing and
+    loglik/BIC come back meaningless (and BIC then prefers two components on
+    single-modality data). Beta-binomial is already indistinguishable from
+    binomial by a + b ~ 1e6, so capping at 1e8 costs nothing statistically.
+    """
+ 
+    def nll(log_ab):
+        a, b = np.exp(log_ab)
+        if a + b > max_conc:
+            return 1e12
+        with np.errstate(all="ignore"):
+            ll = betabinom.logpmf(xu, mu, a, b)
+        lw = ll[w > 0]
+        if not np.all(np.isfinite(lw)) or np.any(lw > 0):
+            return 1e12
+        return -np.sum(w * np.where(w > 0, ll, 0.0))
+ 
+    res = minimize(nll, np.log(init), method="Nelder-Mead")
+    return tuple(np.exp(res.x))
+ 
+ 
+def _mean_p_EM(ab):
+    a, b = ab
+    return a / (a + b)
+ 
+ 
+def _constrain_EM(ab, lo=None, hi=None):
+    """Project a Beta (a, b) so its mean stays within [lo, hi], keeping the
+    concentration a+b fixed."""
+    p, k = _mean_p_EM(ab), ab[0] + ab[1]
+    tgt = min(max(p, lo if lo is not None else 0.0),
+              hi if hi is not None else 1.0)
+    return ab if tgt == p else (tgt * k, (1 - tgt) * k)
+ 
+ 
+def _fit_two_comp_EM(xu, mu, cnt, init_from=None, max_iter=100, tol=1e-8,
+                  init="anchored", anchor_lo=0.3, anchor_hi=0.7,
+                  max_p_nuc=None, min_p_cell=None, verbose=False):
+    """EM for a 2-component beta-binomial mixture on unique (x, m) pairs.
+ 
+    init_from : optional previous (e.g. global) fit dict for warm start.
+    init      : 'anchored' (default) seeds the nucleus component from cells
+                with p < anchor_lo and the cell component from p > anchor_hi.
+                This matters when one population dominates (e.g. sc-only
+                data): the old 'split' scheme cuts at the weighted mean of p,
+                which falls INSIDE the major peak, and EM then converges to a
+                degenerate solution that splits the majority peak in two.
+                'split' restores the previous behaviour.
+    max_p_nuc, min_p_cell :
+                optional bounds on the component means (constrained MLE —
+                e.g. max_p_nuc=0.2, min_p_cell=0.8 encode "a nucleus
+                component must look nuclear and a cell component must look
+                cellular"). Strongly recommended for single-modality or
+                heavily imbalanced datasets, where the minority component
+                would otherwise drift onto the majority peak. None = free.
+ 
+    Returns dict with ab_cell, ab_nuc, lam_cell, loglik, bic_1, bic_2.
+    """
+    n = cnt.sum()
+    p = xu / np.maximum(mu, 1)
+    if init_from is not None:
+        ab1, ab0 = init_from["ab_cell"], init_from["ab_nuc"]
+        lam = init_from["lam_cell"]
+    elif init == "anchored":
+        hi, lo = p > anchor_hi, p < anchor_lo
+        # seed each component from its own end; fall back to a weak prior
+        # when one end is (nearly) empty — EM will move it from there
+        ab1 = (_fit_bb_weighted_EM(xu[hi], mu[hi], cnt[hi]) if hi.sum() >= 2
+               else (19.0, 1.0))
+        ab0 = (_fit_bb_weighted_EM(xu[lo], mu[lo], cnt[lo]) if lo.sum() >= 2
+               else (1.0, 19.0))
+        lam = float(np.clip(cnt[hi].sum() / n, 0.01, 0.99)) if hi.sum() else 0.9
+    else:
+        split = np.average(p, weights=cnt * mu)
+        hi, lo = p >= split, p < split
+        if hi.sum() < 2 or lo.sum() < 2:
+            raise ValueError("Cannot initialize two components — p is unimodal?")
+        ab1 = _fit_bb_weighted_EM(xu[hi], mu[hi], cnt[hi])
+        ab0 = _fit_bb_weighted_EM(xu[lo], mu[lo], cnt[lo])
+        lam = cnt[hi].sum() / n
+ 
+    prev_ll = -np.inf
+    for it in range(max_iter):
+        with np.errstate(all="ignore"):
+            l1 = np.log(lam) + betabinom.logpmf(xu, mu, *ab1)
+            l0 = np.log1p(-lam) + betabinom.logpmf(xu, mu, *ab0)
+        norm = logsumexp(np.stack([l1, l0]), axis=0)
+        r1 = np.exp(l1 - norm)
+        ll = np.sum(cnt * norm)
+        if verbose:
+            print(f"EM iter {it:3d}  loglik={ll:.2f}  lam={lam:.4f}")
+        if ll - prev_ll < tol * abs(ll) and it > 3:
+            break
+        prev_ll = ll
+        lam = np.clip(np.sum(cnt * r1) / n, 1e-6, 1 - 1e-6)
+        ab1 = _fit_bb_weighted_EM(xu, mu, cnt * r1, init=ab1)
+        ab0 = _fit_bb_weighted_EM(xu, mu, cnt * (1 - r1), init=ab0)
+        # project the component means back onto their allowed ranges
+        if min_p_cell is not None:
+            ab1 = _constrain_EM(ab1, lo=min_p_cell)
+        if max_p_nuc is not None:
+            ab0 = _constrain_EM(ab0, hi=max_p_nuc)
+ 
+    if _mean_p_EM(ab1) < _mean_p_EM(ab0):           # component 1 = high-p ("cell")
+        ab1, ab0, lam = ab0, ab1, 1 - lam
+ 
+    ab_s = _fit_bb_weighted_EM(xu, mu, cnt)
+    with np.errstate(all="ignore"):
+        ll1c = np.sum(cnt * betabinom.logpmf(xu, mu, *ab_s))
+    return dict(
+        ab_cell=ab1, ab_nuc=ab0, lam_cell=lam, loglik=prev_ll,
+        bic_1=-2 * ll1c + 2 * np.log(n),
+        bic_2=-2 * prev_ll + 5 * np.log(n),
+    )
+ 
+ 
+def _posterior_cell_EM(x, m, fit):
+    """gamma = P(cell-like component | x, m) for arrays x, m."""
+    with np.errstate(all="ignore"):
+        l1 = np.log(fit["lam_cell"]) + betabinom.logpmf(x, m, *fit["ab_cell"])
+        l0 = np.log1p(-fit["lam_cell"]) + betabinom.logpmf(x, m, *fit["ab_nuc"])
+    return np.exp(l1 - logsumexp(np.stack([l1, l0]), axis=0))
+
+# ------------------------------------------------------------------ main
+def CellorNucEM(
+    adata,
+    sc_genes,
+    sn_genes,
+    assay_col=None,          # optional; used ONLY to name classes post hoc
+    cell_type_col=None,      # optional; refit the mixture within each cell type
+    sc_label="sc",
+    sn_label="sn",
+    layer=None,
+    min_counts=10,
+    gamma_hi=0.9,
+    gamma_lo=0.1,
+    min_cells_fit=500,       # min informative cells to refit within a group
+    min_separation=0.2,      # anchors closer than this -> degenerate, fallback
+    init="anchored",         # 'anchored' (robust when one modality dominates)
+                             # or 'split' (legacy: cut at the weighted mean)
+    anchor_lo=0.3,
+    anchor_hi=0.7,
+    max_p_nuc=None,          # e.g. 0.2: nucleus component's mean p must stay
+    min_p_cell=None,         # e.g. 0.8: cell component's mean p must stay
+                             # — recommended for single-modality / heavily
+                             # imbalanced data (keeps the minority component
+                             # from drifting onto the majority peak)
+    verbose=False,
+    copy=False,
+):
+    """
+    Unsupervised classification of cell-like vs nucleus-like profiles,
+    optionally stratified by cell type.
+ 
+    Adds to adata.obs
+    -----------------
+    modality_counts : m = x + y (evidence)
+    sc_frac         : x / m
+    p_cell          : posterior prob. of the cell-like component
+    modality_fit    : 'per_cell_type' / 'global_fallback' / 'global'
+    modality_classification :
+        with assay_col : Typical Cell (SC) / Nucleus-like Cell (SC) /
+                         Typical Nucleus (SN) / Cell-like Nucleus (SN) / Uncertain
+        without        : Cell-like / Nucleus-like / Uncertain
+ 
+    Adds to adata.uns['modality_em']
+    --------------------------------
+    'global' fit and, if stratified, one entry per cell type (params,
+    mixing weight, loglik, BIC for 1 vs 2 components). bic_2 < bic_1
+    confirms the group really contains two modalities.
+    """
+    if not 0.0 <= gamma_lo < gamma_hi <= 1.0:
+        raise ValueError(
+            f"Need 0 <= gamma_lo < gamma_hi <= 1 (got gamma_lo={gamma_lo}, "
+            f"gamma_hi={gamma_hi}); overlapping bands would make the two "
+            "assignment rules ambiguous."
+        )
+    adata = adata.copy() if copy else adata
+ 
+    x = _set_counts_EM(adata, sc_genes, layer)
+    y = _set_counts_EM(adata, sn_genes, layer)
+    if not (np.allclose(x, np.round(x)) and np.allclose(y, np.round(y))):
+        warnings.warn(
+            "Counts are not integers — did you pass log-normalized data? "
+            "Use layer='counts' (or equivalent raw layer)."
+        )
+    x = np.round(x).astype(int)
+    y = np.round(y).astype(int)
+    m = x + y
+    enough = m >= min_counts
+ 
+    def uniq(mask):
+        return np.unique(
+            np.stack([x[mask], m[mask]], axis=1), axis=0, return_counts=True
+        )
+ 
+    pairs_g, cnt_g = uniq(enough)
+    if len(pairs_g) < 10:
+        raise ValueError("Too few cells with x+y >= min_counts to fit.")
+    fit_kw = dict(init=init, anchor_lo=anchor_lo, anchor_hi=anchor_hi,
+                  max_p_nuc=max_p_nuc, min_p_cell=min_p_cell, verbose=verbose)
+    fit_global = _fit_two_comp_EM(pairs_g[:, 0], pairs_g[:, 1], cnt_g, **fit_kw)
+    if fit_global["bic_2"] >= fit_global["bic_1"]:
+        warnings.warn(
+            "BIC prefers a single component globally: the dataset may contain "
+            "only one modality. Posteriors are still reported — check the "
+            "fitted anchors before interpreting the split."
+        )
+ 
+    gamma = np.zeros(adata.n_obs)
+    fit_used = np.array(["global"] * adata.n_obs, dtype=object)
+    uns = {"global": dict(fit_global)}
+ 
+    if cell_type_col is not None:
+        if cell_type_col not in adata.obs.columns:
+            raise ValueError(f"Column '{cell_type_col}' not found in adata.obs")
+        ctype = adata.obs[cell_type_col].astype(str).values
+        for ct in np.unique(ctype):
+            ct_mask = ctype == ct
+            fit_mask = ct_mask & enough
+            fit_ct, reason = None, None
+            if fit_mask.sum() >= min_cells_fit:
+                pairs_c, cnt_c = uniq(fit_mask)
+                try:
+                    cand = _fit_two_comp_EM(pairs_c[:, 0], pairs_c[:, 1], cnt_c,
+                                         init_from=fit_global, **fit_kw)
+                    sep = _mean_p_EM(cand["ab_cell"]) - _mean_p_EM(cand["ab_nuc"])
+                    if sep >= min_separation:
+                        fit_ct = cand
+                    else:
+                        reason = f"degenerate fit (separation {sep:.3f})"
+                except Exception as e:
+                    reason = f"fit failed ({e})"
+            else:
+                reason = f"only {fit_mask.sum()} informative cells"
+ 
+            if fit_ct is None:
+                warnings.warn(f"Cell type '{ct}': {reason}; using global fit.")
+                fit_ct, tag = fit_global, "global_fallback"
+            else:
+                tag = "per_cell_type"
+            gamma[ct_mask] = _posterior_cell_EM(x[ct_mask], m[ct_mask], fit_ct)
+            fit_used[ct_mask] = tag
+            uns[ct] = {**dict(fit_ct), "fit": tag}
+    else:
+        gamma = _posterior_cell_EM(x, m, fit_global)
+ 
+    # ---------------- classification ----------------
+    cell_p = gamma > gamma_hi
+    nuc_p = gamma < gamma_lo
+    labels = np.array(["Uncertain"] * adata.n_obs, dtype=object)
+ 
+    if assay_col is not None:
+        if assay_col not in adata.obs.columns:
+            raise ValueError(f"Column '{assay_col}' not found in adata.obs")
+        assay = adata.obs[assay_col].astype(str).values
+        is_sc, is_sn = assay == sc_label, assay == sn_label
+        labels[enough & is_sc & cell_p] = "Typical Cell (SC)"
+        labels[enough & is_sc & nuc_p] = "Nucleus-like Cell (SC)"
+        labels[enough & is_sn & nuc_p] = "Typical Nucleus (SN)"
+        labels[enough & is_sn & cell_p] = "Cell-like Nucleus (SN)"
+        categories = [
+            "Typical Cell (SC)", "Nucleus-like Cell (SC)",
+            "Typical Nucleus (SN)", "Cell-like Nucleus (SN)", "Uncertain",
+        ]
+    else:
+        labels[enough & cell_p] = "Cell-like"
+        labels[enough & nuc_p] = "Nucleus-like"
+        categories = ["Cell-like", "Nucleus-like", "Uncertain"]
+ 
+    adata.obs["modality_counts"] = m
+    adata.obs["sc_frac"] = np.where(m > 0, x / np.maximum(m, 1), np.nan)
+    adata.obs["p_cell"] = gamma
+    adata.obs["modality_fit"] = fit_used
+    adata.obs["modality_classification"] = pd.Categorical(labels, categories=categories)
+    adata.uns["modality_em"] = uns
     return adata if copy else None
 
 def MapCategories(adata, key, corrections_dict):
