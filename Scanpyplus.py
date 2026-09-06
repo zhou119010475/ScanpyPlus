@@ -1669,6 +1669,8 @@ def CellorNucEM(
                              # imbalanced data (keeps the minority component
                              # from drifting onto the majority peak)
     verbose=False,
+    print_mode=True,         # print value counts + crosstab (if assay_col)
+                             # and show a UMAP of the classification
     copy=False,
 ):
     """
@@ -1683,14 +1685,22 @@ def CellorNucEM(
     modality_fit    : 'per_cell_type' / 'global_fallback' / 'global'
     modality_classification :
         with assay_col : Typical Cell (SC) / Nucleus-like Cell (SC) /
-                         Typical Nucleus (SN) / Cell-like Nucleus (SN) / Uncertain
-        without        : Cell-like / Nucleus-like / Uncertain
+                         Typical Nucleus (SN) / Cell-like Nucleus (SN) / Neutral
+                         If assay_col holds a single modality there is no
+                         Neutral class: undecided droplets get that
+                         modality's Typical label.
+        without        : Cell-like / Nucleus-like / Neutral
  
     Adds to adata.uns['modality_em']
     --------------------------------
     'global' fit and, if stratified, one entry per cell type (params,
     mixing weight, loglik, BIC for 1 vs 2 components). bic_2 < bic_1
     confirms the group really contains two modalities.
+ 
+    If print_mode, also prints the classification value counts, the
+    assay_col x classification crosstab (when assay_col is given) and
+    draws sc.pl.umap colored by the classification (skipped with a
+    warning if adata.obsm has no 'X_umap').
     """
     if not 0.0 <= gamma_lo < gamma_hi <= 1.0:
         raise ValueError(
@@ -1771,7 +1781,7 @@ def CellorNucEM(
     # ---------------- classification ----------------
     cell_p = gamma > gamma_hi
     nuc_p = gamma < gamma_lo
-    labels = np.array(["Uncertain"] * adata.n_obs, dtype=object)
+    labels = np.array(["Neutral"] * adata.n_obs, dtype=object)
  
     if assay_col is not None:
         if assay_col not in adata.obs.columns:
@@ -1784,12 +1794,33 @@ def CellorNucEM(
         labels[enough & is_sn & cell_p] = "Cell-like Nucleus (SN)"
         categories = [
             "Typical Cell (SC)", "Nucleus-like Cell (SC)",
-            "Typical Nucleus (SN)", "Cell-like Nucleus (SN)", "Uncertain",
+            "Typical Nucleus (SN)", "Cell-like Nucleus (SN)", "Neutral",
         ]
+        # Single-modality data: there is no Neutral class. A droplet the
+        # mixture cannot call (or with too few counts) keeps the modality it
+        # was assayed as, i.e. the typical label of that modality.
+        single_sc = is_sc.any() and not is_sn.any()
+        single_sn = is_sn.any() and not is_sc.any()
+        if single_sc or single_sn:
+            own, typical, categories = (
+                (is_sc, "Typical Cell (SC)",
+                 ["Typical Cell (SC)", "Nucleus-like Cell (SC)"])
+                if single_sc else
+                (is_sn, "Typical Nucleus (SN)",
+                 ["Typical Nucleus (SN)", "Cell-like Nucleus (SN)"])
+            )
+            neutral = (labels == "Neutral") & own
+            labels[neutral] = typical
+            if print_mode:
+                print(f"Single-modality data ({sc_label if single_sc else sn_label} "
+                      f"only): {neutral.sum()} undecided droplets assigned to "
+                      f"'{typical}'.\n")
+            if (labels == "Neutral").any():   # assay values outside sc/sn labels
+                categories.append("Neutral")
     else:
         labels[enough & cell_p] = "Cell-like"
         labels[enough & nuc_p] = "Nucleus-like"
-        categories = ["Cell-like", "Nucleus-like", "Uncertain"]
+        categories = ["Cell-like", "Nucleus-like", "Neutral"]
  
     adata.obs["modality_counts"] = m
     adata.obs["sc_frac"] = np.where(m > 0, x / np.maximum(m, 1), np.nan)
@@ -1797,6 +1828,16 @@ def CellorNucEM(
     adata.obs["modality_fit"] = fit_used
     adata.obs["modality_classification"] = pd.Categorical(labels, categories=categories)
     adata.uns["modality_em"] = uns
+ 
+    if print_mode:
+        cls = adata.obs["modality_classification"]
+        print(cls.value_counts(), "\n")
+        if assay_col is not None:
+            print(pd.crosstab(adata.obs[assay_col], cls))
+        if "X_umap" in adata.obsm:
+            sc.pl.umap(adata, color=["modality_classification"])
+        else:
+            warnings.warn("No 'X_umap' in adata.obsm; skipping the UMAP plot.")
     return adata if copy else None
 
 def MapCategories(adata, key, corrections_dict):
